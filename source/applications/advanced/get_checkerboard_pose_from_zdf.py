@@ -4,7 +4,6 @@ checkerboard pose and save the transformation matrix to a YAML file.
 
 The checkerboard point cloud is also visualized with a coordinate system.
 The ZDF file for this sample can be found under the main instructions for Zivid samples.
-
 """
 
 from pathlib import Path
@@ -26,7 +25,6 @@ def _create_open3d_point_cloud(point_cloud: zivid.PointCloud) -> o3d.geometry.Po
 
     Returns:
         refined_point_cloud_open3d: Point cloud in Open3D format without Nans or non finite values
-
     """
     xyz = point_cloud.copy_data("xyz")
     rgba = point_cloud.copy_data("rgba_srgb")
@@ -53,7 +51,6 @@ def _visualize_checkerboard_point_cloud_with_coordinate_system(
     Args:
         point_cloud_open3d: An Open3d point cloud of a checkerboard
         transform: Transformation matrix (4x4)
-
     """
     coord_system_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(size=30)
     coord_system_mesh.transform(transform)
@@ -67,7 +64,6 @@ def _visualize_checkerboard_point_cloud_with_coordinate_system(
 
 
 def _main() -> None:
-<<<<<<< HEAD
     with zivid.Application():
         data_file = "/home/raul/data_processing/Zivid/zivid-python-samples/source/applications/advanced/CalibrationBoardInCameraOrigin.zdf"
         print(f"Reading ZDF frame from file: {data_file}")
@@ -88,31 +84,7 @@ def _main() -> None:
         _visualize_checkerboard_point_cloud_with_coordinate_system(
             checkerboard_point_cloud, camera_to_checkerboard_transform
         )
-=======
-    # Application class must be initialized before using other Zivid classes.
-    app = zivid.Application()  # noqa: F841  # pylint: disable=unused-variable
 
-    data_file = get_sample_data_path() / "CalibrationBoardInCameraOrigin.zdf"
-    print(f"Reading ZDF frame from file: {data_file}")
-
-    frame = zivid.Frame(data_file)
-    point_cloud = frame.point_cloud()
-
-    print("Detecting checkerboard and estimating its pose in camera frame")
-    camera_to_checkerboard_transform = zivid.calibration.detect_calibration_board(frame).pose().to_matrix()
-    print(f"Camera pose in checkerboard frame:\n{camera_to_checkerboard_transform}")
-
-    transform_file_name = "CameraToCheckerboardTransform.yaml"
-    print(f"Saving detected checkerboard pose to YAML file: {transform_file_name}")
-    transform_file_path = Path(__file__).parent / transform_file_name
-    assert_affine_matrix_and_save(camera_to_checkerboard_transform, transform_file_path)
-
-    print("Visualizing checkerboard with coordinate system")
-    checkerboard_point_cloud = _create_open3d_point_cloud(point_cloud)
-    _visualize_checkerboard_point_cloud_with_coordinate_system(
-        checkerboard_point_cloud, camera_to_checkerboard_transform
-    )
->>>>>>> 9faffb33247743938b57e8543349634faf6a9307
 
 if __name__ == "__main__":
     _main()
