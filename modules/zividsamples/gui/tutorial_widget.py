@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from PyQt5.QtWidgets import QGroupBox, QTextEdit, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QGroupBox, QTextBrowser, QVBoxLayout, QWidget
 
 
 class TutorialWidget(QWidget):
@@ -16,9 +16,10 @@ class TutorialWidget(QWidget):
 
         self.group_box = QGroupBox("Tutorial", self)
 
-        self.text_area = QTextEdit()
+        self.text_area = QTextBrowser()
         self.text_area.setAcceptRichText(True)
         self.text_area.setReadOnly(True)
+        self.text_area.setOpenExternalLinks(True)
 
         group_layout = QVBoxLayout()
         group_layout.addWidget(self.text_area)
@@ -49,15 +50,13 @@ class TutorialWidget(QWidget):
     def update_text(self):
         self.text_area.clear()
         text = f"<h2>{self.title}</h2>"
-        text += "<p><ol>"
+        text += "<table cellpadding='5' style='border-collapse: collapse; width: 100%;; margin-top: 10px;'>"
         for step, completed in self.steps.items():
-            if completed:
-                text += f"<li>&#10003; {step}</li>"  # HTML entity for checkmark (✓)
-            else:
-                text += f"<li>{step}</li>"
-        text += "</ol></p>"
+            checkmark = "&#x2705;" if completed else "&#x2610;"  # ✓ for checked, ☐ for unchecked
+            text += f"<tr><td>{checkmark}</td><td>{step}</td></tr>"
+        text += "</table>"
         text += "<p>" + "</p><p>".join(paragraph for paragraph in self.description) + "</p>"
-        self.text_area.setText(text)
+        self.text_area.setHtml(text)
 
     def set_text_margins(self, left, top, right, bottom):
         document = self.text_area.document()

@@ -12,7 +12,7 @@ import numpy as np
 import zivid
 from nptyping import NDArray, Shape, UInt8
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
+from PyQt5.QtGui import QCloseEvent, QColor, QImage, QPainter, QPixmap
 from PyQt5.QtWidgets import QAction, QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
 from zivid.calibration import DetectionResult, DetectionResultFiducialMarkers, MarkerShape
 from zivid.experimental import PixelMapping
@@ -25,7 +25,7 @@ from zividsamples.gui.live_2d_widget import Live2DWidget
 from zividsamples.gui.marker_widget import MarkersWidget
 from zividsamples.gui.pointcloud_visualizer import show_open3d_visualizer
 from zividsamples.gui.qt_application import ZividQtApplication
-from zividsamples.gui.settings_selector import Settings, select_settings_for_hand_eye
+from zividsamples.gui.settings_selector import SettingsForHandEyeGUI, select_settings_for_hand_eye
 from zividsamples.transformation_matrix import TransformationMatrix
 
 
@@ -94,7 +94,7 @@ class CalibrationObjectWidget(QWidget):
         error_pixmap.fill(Qt.gray)  # Set background color
         painter = QPainter(error_pixmap)
         painter.setPen(QColor(Qt.red))
-        painter.drawText(error_pixmap.rect(), Qt.AlignCenter, error_message)
+        painter.drawText(error_pixmap.rect(), Qt.AlignCenter | Qt.TextWordWrap, error_message)
         painter.end()
         if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
             self.calibration_object_image.set_pixmap(error_pixmap, reset_zoom=True)
@@ -105,17 +105,17 @@ class CalibrationObjectWidget(QWidget):
 
 class TestHandEyeCaptureSettings(QMainWindow):
     hand_eye_configuration: HandEyeConfiguration = HandEyeConfiguration()
-    settings: Settings = Settings()
+    settings: Optional[SettingsForHandEyeGUI] = None
     camera: Optional[zivid.Camera] = None
     last_frame: zivid.Frame
 
-    def __init__(self, parent=None):
+    def __init__(self, zivid_app: zivid.Application, parent=None):
         super().__init__(parent)
         self.setObjectName("HandEyeSettingsTester")
 
         self.cv2_handler = CV2Handler()
-
-        self.setup_camera()
+        self.zivid_app = zivid_app
+        self.camera = select_camera(self.zivid_app, connect=True)
         self.setup_settings()
         self.create_widgets()
         self.setup_layout()
@@ -123,31 +123,29 @@ class TestHandEyeCaptureSettings(QMainWindow):
         self.connect_signals()
 
         if self.camera is None:
-            self.camera_buttons.set_connection_status(False)
+            self.camera_buttons.set_connection_status(self.camera)
         else:
-            self.camera_buttons.set_connection_status(self.camera.state.connected)
+            self.camera_buttons.set_connection_status(self.camera)
 
         self.live2d_widget.start_live_2d()
-
-    def setup_camera(self):
-        self.zividApp = zivid.Application()
-        cameras = self.zividApp.cameras()
-        if len(cameras) > 0:
-            self.camera = select_camera(cameras)
-        if self.camera is not None:
-            self.camera.connect()
 
     def setup_settings(self):
         if self.camera:
             self.settings = select_settings_for_hand_eye(self.camera)
-            self.live2d_widget.settings_2d = self.settings.settings_2d
 
     def create_widgets(self):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
-        capture_function = None if self.camera is None or self.camera.state.connected is False else self.camera.capture
         self.calibration_object_widget = CalibrationObjectWidget(hand_eye_configuration=self.hand_eye_configuration)
-        self.live2d_widget = Live2DWidget(capture_function=capture_function, settings_2d=self.settings.settings_2d)
+        if self.camera is None or self.camera.state.connected is False:
+            self.live2d_widget = Live2DWidget()
+        else:
+            assert self.settings is not None
+            self.live2d_widget = Live2DWidget(
+                capture_function=self.camera.capture_2d,
+                settings_2d=self.settings.production.settings_2d3d.color,
+                camera=self.camera,
+            )
         self.live2d_widget.setFixedHeight(self.calibration_object_widget.height())
         self.live2d_widget.setFixedWidth(self.calibration_object_widget.height())
         self.hand_eye_configuration_buttons = HandEyeButtonsWidget(
@@ -155,8 +153,8 @@ class TestHandEyeCaptureSettings(QMainWindow):
             show_calibration_object_selection=True,
             show_eye_in_hand_selection=False,
         )
-        already_connected = False if self.camera is None else self.camera.state.connected
-        self.camera_buttons = CameraButtonsWidget(already_connected=already_connected, capture_button_text="Capture")
+        self.camera_buttons = CameraButtonsWidget(capture_button_text="Capture")
+        self.camera_buttons.set_connection_status(self.camera)
         self.capture_with_hand_eye_settings = QCheckBox("Use settings optimized for Hand Eye")
         self.capture_with_hand_eye_settings.setChecked(True)
 
@@ -216,17 +214,18 @@ class TestHandEyeCaptureSettings(QMainWindow):
 
     def on_capture_button_clicked(self):
         assert self.camera is not None
+        assert self.settings is not None
         self.live2d_widget.stop_live_2d()
         try:
-            frame = self.camera.capture(
-                self.settings.settings_3d_for_hand_eye
+            frame = self.camera.capture_2d_3d(
+                self.settings.hand_eye.settings_2d3d
                 if self.capture_with_hand_eye_settings.isChecked()
-                else self.settings.settings_3d
+                else self.settings.production.settings_2d3d
             )
             self.last_frame = frame
             self.visualize_frame_action.setEnabled(True)
             self.save_frame_action.setEnabled(True)
-            frame_2d = self.camera.capture(self.settings.settings_2d)
+            frame_2d = frame.frame_2d()
             rgba = frame_2d.image_srgb().copy_data()
             self.live2d_widget.start_live_2d()
             detection_result = (
@@ -239,18 +238,20 @@ class TestHandEyeCaptureSettings(QMainWindow):
                 )
             )
             if not detection_result.valid():
-                calibration_object_text = (
-                    "checkerboard"
-                    if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard
-                    else "markers"
-                )
-                raise RuntimeError(f"Failed to detect {calibration_object_text}")
+                if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
+                    raise RuntimeError(f"Failed to detect Checkerboard. {detection_result.status_description()}")
+                raise RuntimeError("Failed to detect Markers.")
             self.log_detection_result(detection_result)
             if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
                 self.calibration_object_widget.set_checkerboard_image(rgba)
             else:
                 detected_markers = detection_result.detected_markers()
-                self.calibration_object_widget.set_markers(detected_markers, rgba, self.settings.pixel_mapping)
+                pixel_mapping = (
+                    self.settings.hand_eye.pixel_mapping
+                    if self.capture_with_hand_eye_settings.isChecked()
+                    else self.settings.production.pixel_mapping
+                )
+                self.calibration_object_widget.set_markers(detected_markers, rgba, pixel_mapping)
         except RuntimeError as ex:
             print(f"Failed to capture: {ex}")
             self.calibration_object_widget.set_error_message(f"Failed to capture:\n{ex}")
@@ -265,29 +266,31 @@ class TestHandEyeCaptureSettings(QMainWindow):
             self.live2d_widget.stop_live_2d()
             self.live2d_widget.hide()
             self.camera.disconnect()
-            self.camera_buttons.set_connection_status(False)
+            self.camera_buttons.set_connection_status(self.camera)
         else:
-            self.camera = select_camera(self.zividApp.cameras())
+            assert self.settings is not None
+            self.camera = select_camera(self.zivid_app, connect=True)
             if self.camera is None:
-                self.camera_buttons.set_connection_status(False)
+                self.camera_buttons.set_connection_status(self.camera)
             else:
-                self.camera.connect()
-                self.camera_buttons.set_connection_status(self.camera.state.connected)
+                self.camera_buttons.set_connection_status(self.camera)
                 self.setup_settings()
                 if self.camera.state.connected:
-                    self.live2d_widget.capture_function = self.camera.capture
+                    self.live2d_widget.capture_function = self.camera.capture_2d
                     self.live2d_widget.show()
+                    self.live2d_widget.update_settings_2d(
+                        self.settings.production.settings_2d3d.color, self.camera.info.model
+                    )
                     self.live2d_widget.start_live_2d()
 
     def on_select_settings_action_triggered(self):
         self.setup_settings()
 
     def on_save_settings_action_triggered(self):
-        assert self.settings.settings_3d is not None
-        assert self.settings.settings_3d_for_hand_eye is not None
+        assert self.settings is not None
         file_name = Path(QFileDialog.getSaveFileName(self, "Save Settings", "", "Zivid Settings (*.yml)")[0])
-        self.settings.settings_3d.save(file_name.with_suffix(".yml"))
-        self.settings.settings_3d_for_hand_eye.save(
+        self.settings.production.settings_2d3d.save(file_name.with_suffix(".yml"))
+        self.settings.hand_eye.settings_2d3d.save(
             file_name.with_stem(f"{file_name.stem}_for_hand_eye").with_suffix(".yml")
         )
 
@@ -327,28 +330,33 @@ class TestHandEyeCaptureSettings(QMainWindow):
         self,
         detection_result: Union[DetectionResult, DetectionResultFiducialMarkers],
     ):
-        assert self.settings.settings_3d is not None
+        assert self.settings is not None
         log_message = ""
-        if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
-            pose = detection_result.pose()
-            checkerboard_pose_in_camera_frame = TransformationMatrix.from_matrix(np.asarray(pose.to_matrix()))
-            translation = checkerboard_pose_in_camera_frame.translation
-            log_message += (
-                f"Calibration board: [{translation[0]:>8.2f}, {translation[1]:>8.2f}, {translation[2]:>8.2f}]"
-            )
-        else:
-            detected_markers = detection_result.detected_markers()
-            log_message += "Marker - " if len(detected_markers) < 2 else "Markers - "
-            for marker in detected_markers:
-                marker_pose_in_camera_frame = TransformationMatrix.from_matrix(np.asarray(marker.pose.to_matrix()))
-                translation = marker_pose_in_camera_frame.translation
+        if detection_result.valid():
+            if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
+                pose = detection_result.pose()
+                checkerboard_pose_in_camera_frame = TransformationMatrix.from_matrix(np.asarray(pose.to_matrix()))
+                translation = checkerboard_pose_in_camera_frame.translation
                 log_message += (
-                    f"{marker.identifier:>3}: [{translation[0]:>8.2f}, {translation[1]:>8.2f}, {translation[2]:>8.2f}]"
+                    f"Calibration board: [{translation[0]:>8.2f}, {translation[1]:>8.2f}, {translation[2]:>8.2f}]"
                 )
-        log_message += f" (Engine: {self.settings.settings_3d.engine:>8}, Sampling: {self.settings.settings_3d.sampling.pixel:>20})"
+            else:
+                detected_markers = detection_result.detected_markers()
+                log_message += "Marker - " if len(detected_markers) < 2 else "Markers - "
+                for marker in detected_markers:
+                    marker_pose_in_camera_frame = TransformationMatrix.from_matrix(np.asarray(marker.pose.to_matrix()))
+                    translation = marker_pose_in_camera_frame.translation
+                    log_message += f"{marker.identifier:>3}: [{translation[0]:>8.2f}, {translation[1]:>8.2f}, {translation[2]:>8.2f}]"
+        else:
+            log_message += f"Detection failed: {detection_result.status_description()}"
+        log_message += f" (Engine: {self.settings.production.settings_2d3d.engine:>8}, Sampling: {self.settings.production.settings_2d3d.sampling.pixel:>20})"
         print(log_message)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # pylint: disable=C0103
+        self.live2d_widget.closeEvent(event)
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":  # NOLINT
-    qtApp = ZividQtApplication()
-    qtApp.run(TestHandEyeCaptureSettings(), "Test Hand Eye Settings")
+    with ZividQtApplication() as qtApp:
+        qtApp.run(TestHandEyeCaptureSettings(qtApp.zivid_app), "Test Hand Eye Settings")

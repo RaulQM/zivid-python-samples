@@ -55,18 +55,23 @@ def _main() -> None:
     settings.processing.filters.smoothing.gaussian.sigma = 1
     settings.processing.filters.reflection.removal.enabled = True
     settings.processing.filters.reflection.removal.mode = "global"
-    settings.processing.color.balance.red = 1.0
-    settings.processing.color.balance.green = 1.0
-    settings.processing.color.balance.blue = 1.0
+
+    settings_2d = zivid.Settings2D()
+    settings_2d.acquisitions.append(zivid.Settings2D.Acquisition())
+    settings_2d.processing.color.balance.red = 1.0
+    settings_2d.processing.color.balance.blue = 1.0
+    settings_2d.processing.color.balance.green = 1.0
+
+    settings.color = settings_2d
 
     print("Capturing frame")
-    with camera.capture(settings) as frame:
-        point_cloud = frame.point_cloud()
-        xyz = point_cloud.copy_data("xyz")
-        rgba = point_cloud.copy_data("rgba")
+    frame = camera.capture_2d_3d(settings)
+    point_cloud = frame.point_cloud()
+    xyz = point_cloud.copy_data("xyz")
+    rgba = point_cloud.copy_data("rgba_srgb")
 
-        print("Visualizing point cloud")
-        display_pointcloud(xyz, rgba[:, :, 0:3])
+    print("Visualizing point cloud")
+    display_pointcloud(xyz, rgba[:, :, 0:3])
 
 
 if __name__ == "__main__":

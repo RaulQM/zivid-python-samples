@@ -163,13 +163,56 @@ def _get_color_settings_for_camera(camera: zivid.Camera) -> zivid.Settings2D.Sam
         Sampling color to use for camera
 
     """
-    if camera.info.model in [
-        zivid.CameraInfo.Model.zivid2PlusMR130,
-        zivid.CameraInfo.Model.zivid2PlusLR110,
-        zivid.CameraInfo.Model.zivid2PlusMR60,
-    ]:
+    if camera_supports_projection_brightness_boost(camera):
         return zivid.Settings2D.Sampling.Color.grayscale
     return zivid.Settings2D.Sampling.Color.rgb
+
+
+def camera_supports_projection_brightness_boost(camera: zivid.Camera) -> bool:
+    """Check if the given camera model supports the projection brightness boost feature.
+
+    Args:
+        camera (zivid.Camera): The Zivid camera instance to check
+
+    Returns:
+        bool: True if the camera supports brightness boost, False otherwise
+    """
+    model = camera.info.model
+
+    return model in {
+        zivid.CameraInfo.Model.zivid2PlusMR60,
+        zivid.CameraInfo.Model.zivid2PlusMR130,
+        zivid.CameraInfo.Model.zivid2PlusLR110,
+    }
+
+
+def find_max_projector_brightness(camera: zivid.Camera) -> float:
+    """Return the maximum supported projector brightness for the given camera model.
+
+    Ensures the configured brightness does not exceed what the camera model allows.
+    Values are based on hardware model specifications.
+
+    Args:
+        camera (zivid.Camera): The Zivid camera instance to query
+
+    Returns:
+        float: The maximum brightness level supported by the projector
+    """
+    if camera.info.model in (
+        zivid.CameraInfo.Model.zivid2PlusMR60,
+        zivid.CameraInfo.Model.zivid2PlusMR130,
+        zivid.CameraInfo.Model.zivid2PlusLR110,
+    ):
+        return 2.5
+    if camera.info.model in (
+        zivid.CameraInfo.Model.zivid2PlusM60,
+        zivid.CameraInfo.Model.zivid2PlusM130,
+        zivid.CameraInfo.Model.zivid2PlusL110,
+    ):
+        return 2.2
+    if camera.info.model in (zivid.CameraInfo.Model.zividTwo, zivid.CameraInfo.Model.zividTwoL100):
+        return 1.8
+    return 1.0
 
 
 def _find_marker(
@@ -186,7 +229,7 @@ def _find_marker(
         illuminated_scene_frame_2d: 2D frame of scene illuminated by projector
         non_illuminated_scene_frame_2d: 2D frame of scene not illuminated by projector
         marker_resolution: (H,W) of marker image
-        camera_info: Information about camera model, serial number etc.
+        camera_info: Information about camera model, serial number etc
 
     Returns:
         Marker coordinates (x,y) in image
@@ -195,9 +238,9 @@ def _find_marker(
     cropped_rows = 400
 
     normalized_image = _normalize(
-        _cropped_gray_float_image(projected_marker_frame_2d.image_bgra().copy_data()[:, :, :3], cropped_rows),
-        _cropped_gray_float_image(illuminated_scene_frame_2d.image_bgra().copy_data()[:, :, :3], cropped_rows),
-        _cropped_gray_float_image(non_illuminated_scene_frame_2d.image_bgra().copy_data()[:, :, :3], cropped_rows),
+        _cropped_gray_float_image(projected_marker_frame_2d.image_bgra_srgb().copy_data()[:, :, :3], cropped_rows),
+        _cropped_gray_float_image(illuminated_scene_frame_2d.image_bgra_srgb().copy_data()[:, :, :3], cropped_rows),
+        _cropped_gray_float_image(non_illuminated_scene_frame_2d.image_bgra_srgb().copy_data()[:, :, :3], cropped_rows),
     )
 
     blurred_marker = cv2.GaussianBlur(_create_marker(marker_resolution, (1,), (0,)), (5, 5), sigmaX=1.0, sigmaY=1.0)
@@ -232,13 +275,14 @@ def _capture_with_capture_assistant(camera: zivid.Camera) -> zivid.Frame:
     settings.processing.filters.smoothing.gaussian.enabled = True
     settings.processing.filters.smoothing.gaussian.sigma = 1.5
     settings.sampling.pixel = "all"
+    settings.color.sampling.pixel = "all"
 
     # We must limit Brightness to a *maximum* of 2.2, when using `all` mode.
     # This code can be removed by changing the Config.yml option 'Camera/Power/Limit'.
     for acquisition in settings.acquisitions:
         acquisition.brightness = min(acquisition.brightness, 2.2)
 
-    return camera.capture(settings)
+    return camera.capture_2d_3d(settings)
 
 
 def _annotate(frame_2d: zivid.Frame2D, location: Tuple[int, int]) -> np.ndarray:
@@ -252,7 +296,7 @@ def _annotate(frame_2d: zivid.Frame2D, location: Tuple[int, int]) -> np.ndarray:
         Annotated BGRA image
 
     """
-    image = frame_2d.image_bgra().copy_data()
+    image = frame_2d.image_bgra_srgb().copy_data()
     marker_color = (0, 0, 255, 255)
     marker_size = 10
 
@@ -292,66 +336,91 @@ def _main() -> None:
         cv2.imwrite(projector_image_file, projector_image)
 
         print("Displaying the projector image")
-        with zivid.projection.show_image_bgra(camera, projector_image) as projected_image:
-            input("Press enter to continue ...")
+        projected_image = zivid.projection.show_image_bgra(camera, projector_image)
 
-            settings_2d_zero_brightness = zivid.Settings2D(
-                acquisitions=[
-                    zivid.Settings2D.Acquisition(
-                        brightness=0.0, exposure_time=timedelta(microseconds=20000), aperture=2.38
-                    )
-                ],
-                sampling=zivid.Settings2D.Sampling(_get_color_settings_for_camera(camera)),
-            )
+        input("Press enter to continue ...")
 
-            settings_2d_max_brightness = zivid.Settings2D(
-                acquisitions=[
-                    zivid.Settings2D.Acquisition(
-                        brightness=1.8, exposure_time=timedelta(microseconds=20000), aperture=2.38
-                    )
-                ],
-                sampling=zivid.Settings2D.Sampling(_get_color_settings_for_camera(camera)),
-            )
+        # Fine tune 2D settings until the "ProjectedMarker.png" image is well exposed if the projected marker well is not detected in ImageWithMarker.png.
+        exposure_time = timedelta(microseconds=20000)
+        aperture = 2.38
+        gain = 1.0
 
-            print("Capture a 2D frame with the marker")
-            projected_marker_frame_2d = projected_image.capture(settings_2d_zero_brightness)
+        settings_2d_zero_brightness = zivid.Settings2D(
+            acquisitions=[
+                zivid.Settings2D.Acquisition(brightness=0.0, exposure_time=exposure_time, aperture=aperture, gain=gain)
+            ],
+            sampling=zivid.Settings2D.Sampling(_get_color_settings_for_camera(camera)),
+        )
 
-            print("Capture a 2D frame of the scene illuminated with the projector")
-            illuminated_scene_frame_2d = camera.capture(settings_2d_max_brightness)
+        settings_2d_max_brightness = zivid.Settings2D(
+            acquisitions=[
+                zivid.Settings2D.Acquisition(
+                    brightness=find_max_projector_brightness(camera),
+                    exposure_time=exposure_time,
+                    aperture=aperture,
+                    gain=gain,
+                )
+            ],
+            sampling=zivid.Settings2D.Sampling(_get_color_settings_for_camera(camera)),
+        )
 
-            print("Capture a 2D frame of the scene without projector illumination")
-            non_illuminated_scene_frame_2d = camera.capture(settings_2d_zero_brightness)
+        settings_2d_projection = zivid.Settings2D(
+            acquisitions=[
+                zivid.Settings2D.Acquisition(
+                    brightness=find_max_projector_brightness(camera),
+                    exposure_time=exposure_time,
+                    aperture=aperture,
+                    gain=gain,
+                )
+            ],
+            sampling=zivid.Settings2D.Sampling(_get_color_settings_for_camera(camera)),
+        )
 
-            print("Locating marker in the 2D image:")
-            marker_location = _find_marker(
-                projected_marker_frame_2d,
-                illuminated_scene_frame_2d,
-                non_illuminated_scene_frame_2d,
-                marker_resolution,
-                camera.info,
-            )
-            print(marker_location)
+        print("Capturing a 2D frame with the marker")
+        projected_marker_frame_2d = projected_image.capture_2d(
+            settings_2d_zero_brightness
+            if not camera_supports_projection_brightness_boost(camera)
+            else settings_2d_projection
+        )
+        projected_marker_frame_2d.image_rgba().save("ProjectedMarker.png")
 
-            print("Capturing a point cloud using Capture Assistant")
-            frame = _capture_with_capture_assistant(camera)
+        print("Capturing a 2D frame of the scene illuminated with the projector")
+        illuminated_scene_frame_2d = camera.capture_2d(settings_2d_max_brightness)
 
-            print("Looking up 3D coordinate based on the marker position in the 2D image:")
-            points_xyz = frame.point_cloud().copy_data("xyz")
-            points_xyz_height, points_xyz_width = points_xyz.shape[:2]
-            row, col = marker_location[:2]
-            if col < points_xyz_width and row < points_xyz_height and points_xyz[row, col] is not np.nan:
-                print(points_xyz[row, col])
+        print("Capturing a 2D frame of the scene without projector illumination")
+        non_illuminated_scene_frame_2d = camera.capture_2d(settings_2d_zero_brightness)
 
-                print("Annotating the 2D image captured while projecting the marker")
-                annotated_image = _annotate(projected_marker_frame_2d, marker_location)
+        print("Locating marker in the 2D image:")
+        marker_location = _find_marker(
+            projected_marker_frame_2d,
+            illuminated_scene_frame_2d,
+            non_illuminated_scene_frame_2d,
+            marker_resolution,
+            camera.info,
+        )
+        print(marker_location)
 
-                annotated_image_file = "ImageWithMarker.png"
-                print(f"Saving the annotated 2D image to file: {annotated_image_file}")
-                cv2.imwrite(annotated_image_file, annotated_image)
+        print("Capturing a point cloud using Capture Assistant")
 
-                print("Done")
-            else:
-                print("Unable to find 3D coordinate!")
+        frame = _capture_with_capture_assistant(camera)
+        print("Looking up 3D coordinate based on the marker position in the 2D image:")
+        points_xyz = frame.point_cloud().copy_data("xyz")
+
+        points_xyz_height, points_xyz_width = points_xyz.shape[:2]
+        row, col = marker_location[:2]
+        if col < points_xyz_width and row < points_xyz_height and points_xyz[row, col] is not np.nan:
+            print(points_xyz[row, col])
+
+            print("Annotating the 2D image captured while projecting the marker")
+            annotated_image = _annotate(projected_marker_frame_2d, marker_location)
+
+            annotated_image_file = "ImageWithMarker.png"
+            print(f"Saving the annotated 2D image to file: {annotated_image_file}")
+            cv2.imwrite(annotated_image_file, annotated_image)
+
+            print("Done")
+        else:
+            print("Unable to find 3D coordinate!")
 
 
 if __name__ == "__main__":

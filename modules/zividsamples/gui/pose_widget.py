@@ -8,25 +8,16 @@ import numpy as np
 import zivid
 from PyQt5.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import (
-    QDialog,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt5.QtWidgets import QGridLayout, QGroupBox, QLabel, QLineEdit, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 from scipy.spatial.transform import Rotation
+from zividsamples.gui.aspect_ratio_label import AspectRatioLabel
+from zividsamples.gui.qt_application import create_horizontal_line, create_vertical_line
 from zividsamples.gui.rotation_format_configuration import (
     RotationFormats,
     RotationFormatSelectionWidget,
     RotationInformation,
 )
-from zividsamples.paths import get_file_path
+from zividsamples.paths import get_image_file_path
 from zividsamples.transformation_matrix import TransformationMatrix
 
 
@@ -45,74 +36,6 @@ def wrap_path(path: Path, wrap_length: int) -> str:
     return "\n".join(wrapped_lines)
 
 
-class AspectRatioLabel(QLabel):
-
-    def __init__(self, title: str, pixmap, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(200)
-        self.original_pixmap = pixmap
-        self.title = title
-        self.setPixmap()
-
-    def set_original_pixmap(self, pixmap):
-        self.original_pixmap = pixmap
-        self.setPixmap()
-
-    def setPixmap(self):
-        super().setPixmap(self.scaledPixmap())
-
-    def resizeEvent(self, _):
-        if self.original_pixmap:
-            self.setPixmap()
-
-    def scaledPixmap(self):
-        size = self.size()
-        return self.original_pixmap.scaledToHeight(size.height(), Qt.SmoothTransformation)
-
-    def setFixedHeight(self, height):
-        constrained_height = min(max(self.minimumHeight(), height), self.maximumHeight())
-        super().setFixedHeight(constrained_height)
-
-    # pylint: disable=too-many-positional-arguments
-    def setHeightFromGrid(self, grid_layout, row_start, row_span, col_start, col_span):
-        max_height = 0 if row_start > 0 else grid_layout.verticalSpacing()
-        for row in range(row_start, row_start + row_span):
-            max_height += grid_layout.verticalSpacing()
-            max_height_within_row = 0
-            for col in range(col_start, col_start + col_span):
-                item = grid_layout.itemAtPosition(row, col)
-                if item:
-                    widget = item.widget()
-                    if widget:
-                        widget_height = widget.sizeHint().height()
-                        max_height_within_row = max(max_height_within_row, widget_height)
-            max_height += max_height_within_row
-        max_height += grid_layout.verticalSpacing()
-
-        self.setFixedHeight(max_height)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.show_original_pixmap()
-
-    def show_original_pixmap(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self.title)
-        dialog.setModal(True)
-
-        pixmap_label = QLabel()
-        pixmap_label.setPixmap(self.original_pixmap)
-        pixmap_label.setAlignment(Qt.AlignCenter)
-
-        layout = QVBoxLayout()
-        layout.addWidget(pixmap_label)
-        dialog.setLayout(layout)
-
-        dialog.resize(self.original_pixmap.size())
-
-        dialog.exec_()
-
-
 class PoseWidgetDisplayMode(Enum):
     OnlyPose = 0
     Basic = 1
@@ -120,11 +43,7 @@ class PoseWidgetDisplayMode(Enum):
 
 
 class BasePoseWidget(QWidget):
-    transformation_matrix: TransformationMatrix = TransformationMatrix()
-    descriptive_image_eye_in_hand: Optional[QPixmap] = None
-    descriptive_image_eye_to_hand: Optional[QPixmap] = None
     pose_updated = pyqtSignal()
-    rotation_information: RotationInformation
 
     # pylint: disable=too-many-positional-arguments
     def __init__(
@@ -140,10 +59,13 @@ class BasePoseWidget(QWidget):
         super().__init__(parent)
         self.title = title
         self.eye_in_hand = eye_in_hand
-        self.rotation_information = initial_rotation_information
+        self.rotation_information: RotationInformation = initial_rotation_information
+        self.transformation_matrix: TransformationMatrix = TransformationMatrix()
         self.display_mode = display_mode
         self.read_only = read_only
 
+        self.descriptive_image_eye_in_hand: Optional[QPixmap] = None
+        self.descriptive_image_eye_to_hand: Optional[QPixmap] = None
         if descriptive_image_paths is not None:
             self.descriptive_image_eye_in_hand = QPixmap(descriptive_image_paths[0].as_posix())
             self.descriptive_image_eye_to_hand = QPixmap(descriptive_image_paths[1].as_posix())
@@ -277,18 +199,15 @@ class BasePoseWidget(QWidget):
 
 
 def parameter_text_to_float(text: str) -> float:
-    if text == "":
+    sanitized_text = text.strip().replace(",", ".")
+    if sanitized_text == "":
         return 0.0
-    return float(text)
+    if not re.fullmatch(r"[0-9.\-]+", sanitized_text):
+        raise ValueError(f"Invalid input: {text}")
+    return float(sanitized_text)
 
 
 class PoseWidget(BasePoseWidget):
-    yaml_pose_path: Path
-    rotation_parameters: List[float]
-    rotation_parameter_editors: List[QLineEdit]
-    translation_parameter_editors: List[QLineEdit]
-    pose_updated = pyqtSignal()
-    rotation_vector_user_parameters: List[float] = [0.0, 0.0, 0.0]
 
     # pylint: disable=too-many-positional-arguments
     def __init__(
@@ -308,6 +227,8 @@ class PoseWidget(BasePoseWidget):
 
         self.yaml_pose_path = yaml_pose_path
 
+        self.rotation_vector_user_parameters: List[float] = [0.0, 0.0, 0.0]
+        self.rotation_parameters: List[float] = []
         self.setup_widgets()
         self.setup_layout()
         self.setup_connections()
@@ -322,7 +243,7 @@ class PoseWidget(BasePoseWidget):
     def setup_widgets(self):
         self.translation_parameters_label = QLabel()
         self.translation_parameters_label.setText("Translation")
-        self.translation_parameter_editors = [QLineEdit() for _ in range(3)]
+        self.translation_parameter_editors: List[QLineEdit] = [QLineEdit() for _ in range(3)]
         for index, parameter_editor in enumerate(self.translation_parameter_editors):
             parameter_editor.setObjectName(f"translation_parameter_{index}")
             parameter_editor.setReadOnly(self.read_only)
@@ -330,12 +251,12 @@ class PoseWidget(BasePoseWidget):
         self.rotation_parameters_layout = QGridLayout()
         self.rotation_parameters_label = QLabel()
         self.rotation_parameters_label.setText(self._rotation_label_text())
-        self.rotation_parameter_editors = [QLineEdit() for _ in range(9)]
+        self.rotation_parameter_editors: List[QLineEdit] = [QLineEdit() for _ in range(9)]
         for index, parameter_editor in enumerate(self.rotation_parameter_editors):
             parameter_editor.setObjectName(f"rotation_parameter_{index}")
             parameter_editor.setReadOnly(self.read_only)
 
-        self.advanced_divider = self._create_horizontal_line()
+        self.advanced_divider = create_horizontal_line()
         self.pose_label = QLabel()
         self.pose_label.setText(f"Translation + {self._rotation_label_text()}")
         self.pose_text = QLineEdit()
@@ -350,7 +271,7 @@ class PoseWidget(BasePoseWidget):
         row_offset = 0 if self.display_mode == PoseWidgetDisplayMode.OnlyPose else 3
 
         if self.display_mode != PoseWidgetDisplayMode.OnlyPose:
-            self.grid_layout.addWidget(self._create_horizontal_line(), row_offset, 0, 1, 4)
+            self.grid_layout.addWidget(create_horizontal_line(), row_offset, 0, 1, 4)
             row_offset = row_offset + 1
 
         self.grid_layout.addWidget(self.translation_parameters_label, row_offset, 0)
@@ -358,7 +279,7 @@ class PoseWidget(BasePoseWidget):
             self.grid_layout.addWidget(parameter_editor, row_offset, index, 1, 1)
         row_offset = row_offset + 1
 
-        self.grid_layout.addWidget(self._create_horizontal_line(), row_offset, 0, 1, 4)
+        self.grid_layout.addWidget(create_horizontal_line(), row_offset, 0, 1, 4)
         row_offset = row_offset + 1
 
         for index, parameter_editor in enumerate(self.rotation_parameter_editors):
@@ -465,9 +386,15 @@ class PoseWidget(BasePoseWidget):
 
     def on_rotation_parameter_changed(self):
         modified_index = int(self.sender().objectName().split("_")[-1])
-        update_parameter = parameter_text_to_float(self.sender().text())
-        if np.isclose(update_parameter, self.rotation_parameters[modified_index]):
+        try:
+            update_parameter = parameter_text_to_float(self.sender().text())
+            if np.isclose(update_parameter, self.rotation_parameters[modified_index]):
+                return
+        except ValueError:
+            # We have invalid input, ignore it and revert to what we had before.
+            self.update_from_transformation_matrix()
             return
+
         updated_rotation_parameters = [
             parameter_text_to_float(parameter_editor.text())
             for i, parameter_editor in enumerate(self.rotation_parameter_editors)
@@ -493,6 +420,16 @@ class PoseWidget(BasePoseWidget):
             self.update_from_transformation_matrix()
 
     def on_translation_parameter_changed(self):
+        modified_index = int(self.sender().objectName().split("_")[-1])
+        try:
+            update_parameter = parameter_text_to_float(self.sender().text())
+            if np.isclose(update_parameter, self.transformation_matrix.translation[modified_index]):
+                return
+        except ValueError:
+            # We have invalid input, ignore it and revert to what we had before.
+            self.update_from_transformation_matrix()
+            return
+
         for i, parameter_editor in enumerate(self.translation_parameter_editors):
             self.transformation_matrix.translation[i] = parameter_text_to_float(parameter_editor.text())
         self.update_from_transformation_matrix()
@@ -545,13 +482,6 @@ class PoseWidget(BasePoseWidget):
             error_message = f"Failed to load from {self.yaml_pose_path}: {ex}"
             QMessageBox.warning(self, "Load Error", error_message)
 
-    def _create_horizontal_line(self) -> QFrame:
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setProperty("isHorizontalLine", True)
-        return line
-
     def get_tab_widgets_in_order(self) -> List[QWidget]:
         widgets: List[QWidget] = []
         for parameter_editor in self.translation_parameter_editors:
@@ -572,10 +502,12 @@ class PoseWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        ee_camera_pose_img_path = get_file_path(
+        ee_camera_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-ee-camera-pose-low-res.png"
         )
-        rob_camera_pose_img_path = get_file_path("hand-eye-robot-and-calibration-board-rob-camera-pose-low-res.png")
+        rob_camera_pose_img_path = get_image_file_path(
+            "hand-eye-robot-and-calibration-board-rob-camera-pose-low-res.png"
+        )
         return cls(
             title="Hand Eye Transform",
             initial_rotation_information=initial_rotation_information,
@@ -593,10 +525,10 @@ class PoseWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        robot_ee_pose_img_path = get_file_path(
+        robot_ee_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-robot-ee-pose-low-res.png"
         )
-        rob_ee_pose_img_path = get_file_path("hand-eye-robot-and-calibration-board-rob-ee-pose-low-res.png")
+        rob_ee_pose_img_path = get_image_file_path("hand-eye-robot-and-calibration-board-rob-ee-pose-low-res.png")
         return cls(
             title="Robot Pose",
             initial_rotation_information=initial_rotation_information,
@@ -614,10 +546,10 @@ class PoseWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        eih_camera_object_pose_img_path = get_file_path(
+        eih_camera_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-camera-object-pose-low-res.png"
         )
-        eth_camera_object_pose_img_path = get_file_path(
+        eth_camera_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-object-pose-low-res.png"
         )
         return cls(
@@ -638,10 +570,10 @@ class PoseWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        eih_robot_object_pose_img_path = get_file_path(
+        eih_robot_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-robot-object-pose-low-res.png"
         )
-        eth_robot_object_pose_img_path = get_file_path(
+        eth_robot_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-ee-object-pose-low-res.png"
         )
         return cls(
@@ -717,7 +649,7 @@ class MarkerPosesWidget(BasePoseWidget):
 
         self.grid_layout.addWidget(self.ids_title_label, row_offset, 0)
         self.grid_layout.addWidget(self.translation_title_label, row_offset, 1, 1, 3, alignment=Qt.AlignCenter)
-        self.grid_layout.addWidget(self._create_vertical_line(), row_offset, 4)
+        self.grid_layout.addWidget(create_vertical_line(), row_offset, 4)
         self.grid_layout.addWidget(
             self.rotation_title_label,
             row_offset,
@@ -752,7 +684,7 @@ class MarkerPosesWidget(BasePoseWidget):
                 label.setAlignment(Qt.AlignVCenter | Qt.AlignCenter)
                 self.grid_layout.addWidget(label, row_offset, index)
 
-            self.grid_layout.addWidget(self._create_vertical_line(), row_offset, 4)
+            self.grid_layout.addWidget(create_vertical_line(), row_offset, 4)
 
             # Add rotation parameters
             for index, parameter in enumerate(self.rotation_parameters[key], start=5):
@@ -807,13 +739,6 @@ class MarkerPosesWidget(BasePoseWidget):
         self.rotation_title_label.setText(self._rotation_label_text())
         self.update_markers()
 
-    def _create_vertical_line(self) -> QFrame:
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setProperty("isVerticalLine", True)
-        return line
-
     @classmethod
     def MarkersInCameraFrame(
         cls,
@@ -821,10 +746,10 @@ class MarkerPosesWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        eih_camera_object_pose_img_path = get_file_path(
+        eih_camera_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-camera-object-pose-low-res.png"
         )
-        eth_camera_object_pose_img_path = get_file_path(
+        eth_camera_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-object-pose-low-res.png"
         )
         return cls(
@@ -843,14 +768,14 @@ class MarkerPosesWidget(BasePoseWidget):
         display_mode: PoseWidgetDisplayMode = PoseWidgetDisplayMode.Basic,
         initial_rotation_information: RotationInformation = RotationInformation(),
     ):
-        eih_robot_object_pose_img_path = get_file_path(
+        eih_robot_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-camera-on-robot-robot-object-pose-low-res.png"
         )
-        eth_robot_object_pose_img_path = get_file_path(
+        eth_robot_object_pose_img_path = get_image_file_path(
             "hand-eye-robot-and-calibration-board-ee-object-pose-low-res.png"
         )
         return cls(
-            title=f"Marker Poses In Robot {('Base' if eye_in_hand else 'Tool')} Frame",
+            title="Marker Poses In Robot Base Frame",
             initial_rotation_information=initial_rotation_information,
             eye_in_hand=eye_in_hand,
             display_mode=display_mode,

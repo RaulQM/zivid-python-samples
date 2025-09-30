@@ -20,6 +20,7 @@ More information about RoboDK is available at: https://robodk.com/doc/en/Getting
 
 import argparse
 import datetime
+from pathlib import Path
 from typing import Dict, Tuple
 
 import cv2
@@ -41,7 +42,6 @@ def _assisted_capture(camera: zivid.Camera) -> zivid.Frame:
 
     Returns:
         frame: Zivid frame
-        bgra_image: BGRA image
 
     """
     suggest_settings_parameters = zivid.capture_assistant.SuggestSettingsParameters(
@@ -50,11 +50,8 @@ def _assisted_capture(camera: zivid.Camera) -> zivid.Frame:
     )
 
     settings_list = zivid.capture_assistant.suggest_settings(camera, suggest_settings_parameters)
-    frame = camera.capture(settings_list)
 
-    bgra_image = frame.point_cloud().copy_data("bgra")
-
-    return frame, bgra_image
+    return camera.capture_2d_3d(settings_list)
 
 
 def _estimate_calibration_object_pose(frame: zivid.Frame, user_options: argparse.Namespace) -> np.ndarray:
@@ -76,7 +73,7 @@ def _estimate_calibration_object_pose(frame: zivid.Frame, user_options: argparse
         print("Detecting the ArUco marker pose (center of the marker)")
 
         calibration_object_pose = (
-            zivid.calibration.detect_markers(frame, user_options.ids, user_options.dictionary)
+            zivid.calibration.detect_markers(frame, user_options.id, user_options.dictionary)
             .detected_markers()[0]
             .pose.to_matrix()
         )
@@ -106,13 +103,13 @@ def _get_base_to_calibration_object_transform(
     if user_options.eih:
         print("Loading current robot pose")
         base_to_flange_transform = np.array(robot.Pose()).T
-        flange_to_camera_transform = load_and_assert_affine_matrix(user_options.hand_eye_yaml)
+        flange_to_camera_transform = load_and_assert_affine_matrix(Path(user_options.hand_eye_yaml))
 
         base_to_calibration_object_transform = (
             base_to_flange_transform @ flange_to_camera_transform @ camera_to_calibration_object_transform
         )
     elif user_options.eth:
-        base_to_camera_transform = load_and_assert_affine_matrix(user_options.hand_eye_yaml)
+        base_to_camera_transform = load_and_assert_affine_matrix(Path(user_options.hand_eye_yaml))
 
         base_to_calibration_object_transform = base_to_camera_transform @ camera_to_calibration_object_transform
     else:
@@ -340,11 +337,11 @@ def _main() -> None:
     set_robot_speed_and_acceleration(robot, speed=100, joint_speed=100, acceleration=50, joint_acceleration=50)
 
     print("Loading the Pointed Hand-Eye Verification Tool transformation matrix from a YAML file")
-    tool_base_to_tool_tip_transform = load_and_assert_affine_matrix(user_options.tool_yaml)
+    tool_base_to_tool_tip_transform = load_and_assert_affine_matrix(Path(user_options.tool_yaml))
 
     if user_options.mounts_yaml:
         print("Loading the on-arm mounts transformation matrix from a YAML file")
-        flange_to_tool_base_transform = load_and_assert_affine_matrix(user_options.mounts_yaml)
+        flange_to_tool_base_transform = load_and_assert_affine_matrix(Path(user_options.mounts_yaml))
 
         flange_to_tcp_transform = flange_to_tool_base_transform @ tool_base_to_tool_tip_transform
     else:
@@ -362,7 +359,8 @@ def _main() -> None:
 
     while True:
         try:
-            frame, bgra_image = _assisted_capture(camera)
+            frame = _assisted_capture(camera)
+            bgra_image = frame.point_cloud().copy_data("bgra_srgb")
             camera_to_calibration_object_transform = _estimate_calibration_object_pose(frame, user_options)
 
             print("Calculating the calibration object pose in robot base frame")

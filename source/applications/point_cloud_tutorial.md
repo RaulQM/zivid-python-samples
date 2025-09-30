@@ -13,6 +13,7 @@ tutorial see:
 [**Frame**](#Frame) |
 [**Point**](#Point-Cloud) |
 [**Downsample**](#Downsample) |
+[**Voxel**](#Voxel-downsample) |
 [**Normals**](#Normals) |
 [**Visualize**](#Visualize) |
 [**Conclusion**](#Conclusion) |
@@ -50,25 +51,46 @@ The `zivid.Frame` contains the point cloud and color image (stored on
 compute device memory) and the capture and camera information. Capture
 ^^^^^^^
 
-When you capture with Zivid, you get a frame in return.
+When you capture with Zivid, you get a frame in return. The point cloud
+is stored in the frame, and the frame is stored in the GPU memory. The
+capture can contain color or not, depending of the method that you call.
+For more information see this `table with different capture
+modes<capture-mode-table>`.
+
+### Capture with color
+
+If you want to capture a point cloud with color, you can use the
+`Zivid::Camera::capture2D3D()` method.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/camera/basic/capture.py#L20))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/camera/basic/capture.py#L22-L23))
 
 ``` sourceCode python
-with camera.capture(settings) as frame:
+frame = camera.capture_2d_3d(settings)
+```
+
+### Capture without color
+
+If you want to capture a point cloud without color, you can use the
+`Zivid::Camera::capture3D()` method.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/camera/basic/capture_with_settings_from_yml.py#L122))
+
+``` sourceCode python
+frame_3d = camera.capture_3d(settings)
 ```
 
 Check
 [capture\_tutorial](https://github.com/zivid/zivid-python-samples/tree/master/source/camera/basic/capture_tutorial.md)
 for detailed instructions on how to capture.
 
-### Load
+#### Load
 
 The frame can also be loaded from a ZDF file.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L14-L16))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L14-L17))
 
 ``` sourceCode python
 data_file = get_sample_data_path() / "Zivid3D.zdf"
@@ -78,12 +100,12 @@ frame = zivid.Frame(data_file)
 
 ## Point Cloud
 
-### Get handle from Frame
+#### Get handle from Frame
 
 You can now get a handle to the point cloud data on the GPU.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L19))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L20))
 
 ``` sourceCode python
 point_cloud = frame.point_cloud()
@@ -101,22 +123,49 @@ from GPU memory.
 
 Note:
 
-`zivid.camera.capture()` method returns at some moment in time after the
-camera completes capturing raw images. The handle from
-`zivid.frame.point_cloud()` is available instantly. However, the actual
-point cloud data becomes available only after the processing on the GPU
-is finished. Any calls to data-copy functions (section below) will block
-and wait for processing to finish before proceeding with the requested
-copy operation.
+`zivid.camera.capture_2d_3d()` and `zivid.camera.capture_3d()` methods
+return at some moment in time after the camera completes capturing raw
+images. The handle from `zivid.frame.point_cloud()` is available
+instantly. However, the actual point cloud data becomes available only
+after the processing on the GPU is finished. Any calls to data-copy
+functions (section below) will block and wait for processing to finish
+before proceeding with the requested copy operation.
 
 For detailed explanation, see [Point Cloud Capture
 Process](https://support.zivid.com/latest/academy/camera/point-cloud-capture-process.html).
-----
 
-### Copy from GPU to CPU memory
+-----
+
+#### Unorganized point cloud
+
+It is possible to convert the organized point cloud to an unorganized
+point cloud. While doing so, all NaN values are removed, and the point
+cloud is flattened to a 1D array.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/multi_camera/stitch_by_transformation.py#L109))
+
+``` sourceCode python
+unorganized_point_cloud = frame.point_cloud().to_unorganized_point_cloud()
+```
+
+### Combining multiple unorganized point clouds
+
+The unorganized point cloud can be extended with additional unorganized
+point clouds.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/multi_camera/stitch_by_transformation_from_zdf.py#L76))
+
+``` sourceCode python
+stitched_point_cloud.extend(current_point_cloud.transform(transformation_matrix))
+```
+
+#### Copy from GPU to CPU memory
 
 You can now selectively copy data based on what is required. This is the
 complete list of output data formats and how to copy them from the GPU.
+Most of these APIs also applies to the unorganized point cloud.
 
 | Return type                                                                                                                           | Copy functions                    | Data per pixel | Total data |
 | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | -------------- | ---------- |
@@ -132,14 +181,14 @@ complete list of output data formats and how to copy them from the GPU.
 Here is an example of how to copy data.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L20-L21))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/basic/file_formats/read_iterate_zdf.py#L21-L22))
 
 ``` sourceCode python
 xyz = point_cloud.copy_data("xyz")
-rgba = point_cloud.copy_data("rgba")
+rgba = point_cloud.copy_data("rgba_srgb")
 ```
 
-#### Memory allocation options
+### Memory allocation options
 
 In terms of memory allocation, there are two ways to copy data:
 
@@ -156,10 +205,42 @@ frame or, e.g., [scale the point cloud by transforming it from mm to
 m](https://support.zivid.com/latest//academy/applications/transform/transform-millimeters-to-meters.html).
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/hand_eye_calibration/utilize_hand_eye_calibration.py#L119))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/hand_eye_calibration/utilize_hand_eye_calibration.py#L120))
 
 ``` sourceCode python
 point_cloud.transform(base_to_camera_transform)
+```
+
+Transformation can be done in-place:
+
+  - `Zivid::PointCloud::transform()`
+  - `Zivid::UnorganizedPointCloud::transform()`
+
+or by creating a new instance:
+
+  - `Zivid::PointCloud::transformed()`
+  - `Zivid::UnorganizedPointCloud::transformed()`
+
+The following example shows how create a new instance of
+`Zivid::UnorganizedPointCloud` with a transformation applied to it. Note
+that in this sample is is not necessary to create a new instance, as the
+untransformed point cloud is not used after the transformation.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/multi_camera/stitch_by_transformation.py#L111))
+
+``` sourceCode python
+transformed_unorganized_point_cloud = unorganized_point_cloud.transformed(transformation_matrix)
+```
+
+Even the in-place API returns the transformed point cloud, so you can
+use it directly, as in the example below.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/multi_camera/stitch_by_transformation_from_zdf.py#L76))
+
+``` sourceCode python
+stitched_point_cloud.extend(current_point_cloud.transform(transformation_matrix))
 ```
 
 ## Downsample
@@ -182,11 +263,20 @@ Note:
 
 -----
 
+-----
+
+Note:
+
+`Zivid::UnorganizedPointCloud` does not support downsampling, but it
+does support voxel downsampling, see `voxel_downsample`.
+
+-----
+
 Downsampling can be done in-place, which modifies the current point
 cloud.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/downsample.py#L61))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/downsample.py#L63))
 
 ``` sourceCode python
 point_cloud.downsample(zivid.PointCloud.Downsampling.by2x2)
@@ -196,7 +286,7 @@ It is also possible to get the downsampled point cloud as a new point
 cloud instance, which does not alter the existing point cloud.
 
 ([go to
-source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/downsample.py#L55))
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/downsample.py#L57))
 
 ``` sourceCode python
 downsampled_point_cloud = point_cloud.downsampled(zivid.PointCloud.Downsampling.by2x2)
@@ -205,6 +295,43 @@ downsampled_point_cloud = point_cloud.downsampled(zivid.PointCloud.Downsampling.
 Zivid SDK supports the following downsampling rates: `by2x2`, `by3x3`,
 and `by4x4`, with the possibility to perform downsampling multiple
 times.
+
+## Voxel downsample
+
+`Zivid::UnorganizedPointCloud` supports voxel downsampling. The API
+takes two arguments:
+
+1.  `voxelSize` - the size of the voxel in millimeters.
+2.  `minPointsPerVoxel` - the minimum number of points per voxel to keep
+    it.
+
+Voxel downsampling subdivides 3D space into a grid of cubic voxels with
+a given size. If a given voxel contains a number of points at or above
+the given limit, all those source points are replaced with a single
+point with the following properties:
+
+  - Position (XYZ) is an SNR-weighted average of the source points'
+    positions, i.e. a high-confidence source point will have a greater
+    influence on the resulting position than a low-confidence one.
+  - Color (RGBA) is the average of the source points' colors.
+  - Signal-to-noise ratio (SNR) is sqrt(sum(SNR^2)) of the source
+    points' SNR values, i.e. the SNR of a new point will increase with
+    both the number and the confidence of the source points that were
+    used to compute its position.
+
+Using minPointsPerVoxel \> 1 is particularly useful for removing noise
+and artifacts from unorganized point clouds that are a combination of
+point clouds captured from different angles. This is because a given
+artifact is most likely only present in one of the captures, and
+minPointsPerVoxel can be used to only fill voxels that both captures
+"agree" on.
+
+([go to
+source](https://github.com/zivid/zivid-python-samples/tree/master//source/applications/advanced/multi_camera/stitch_by_transformation.py#L115))
+
+``` sourceCode python
+final_point_cloud = stitched_point_cloud.voxel_downsampled(0.5, 1)
+```
 
 ## Normals
 
@@ -245,7 +372,8 @@ manipulate it, transform it, and visualize it.
 
 ## Version History
 
-| SDK    | Changes                                                                                                                                                   |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.11.0 | Added support for SRGB color space.                                                                                                                       |
-| 2.10.0 | [:orphan:](https://support.zivid.com/latest/academy/camera/monochrome-capture.html) introduces a faster alternative to `downsample_point_cloud_tutorial`. |
+| SDK    | Changes                                                                                                                                                           |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.16.0 | Added support for `Zivid::UnorganizedPointCloud`. `transformed` is added as a function to `Zivid::PointCloud` (also available in `Zivid::UnorganizedPointCloud`). |
+| 2.11.0 | Added support for SRGB color space.                                                                                                                               |
+| 2.10.0 | [:orphan:](https://support.zivid.com/latest/academy/camera/monochrome-capture.html) introduces a faster alternative to `downsample_point_cloud_tutorial`.         |

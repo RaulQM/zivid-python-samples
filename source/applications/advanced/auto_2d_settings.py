@@ -27,6 +27,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import zivid
+import zivid.calibration
 from zividsamples.calibration_board_utils import find_white_mask_from_checkerboard
 from zividsamples.white_balance_calibration import (
     camera_may_need_color_balancing,
@@ -111,28 +112,8 @@ def _capture_rgb(camera: zivid.Camera, settings_2d: zivid.Settings2D) -> np.ndar
         rgb: RGB image (H, W, 3)
 
     """
-    rgb = camera.capture(settings_2d).image_rgba().copy_data()[:, :, :3]
+    rgb = camera.capture_2d(settings_2d).image_rgba_srgb().copy_data()[:, :, :3]
     return rgb
-
-
-def _capture_assistant_settings(camera: zivid.Camera) -> zivid.Settings:
-    """Get settings from capture assistant.
-
-    Args:
-        camera: Zivid camera
-
-    Returns:
-        Zivid 3D capture settings from capture assistant
-
-    """
-    suggest_settings_parameters = zivid.capture_assistant.SuggestSettingsParameters(
-        max_capture_time=timedelta(milliseconds=1200),
-        ambient_light_frequency=zivid.capture_assistant.SuggestSettingsParameters.AmbientLightFrequency.none,
-    )
-    suggested_settings = zivid.capture_assistant.suggest_settings(camera, suggest_settings_parameters)
-    suggested_settings.sampling.pixel = "all"
-
-    return suggested_settings
 
 
 def _find_white_mask_and_distance_to_checkerboard(camera: zivid.Camera) -> Tuple[np.ndarray, float]:
@@ -150,14 +131,12 @@ def _find_white_mask_and_distance_to_checkerboard(camera: zivid.Camera) -> Tuple
 
     """
     try:
-        settings = _capture_assistant_settings(camera)
-        frame = camera.capture(settings)
-
+        frame = zivid.calibration.capture_calibration_board(camera)
         checkerboard_pose = zivid.calibration.detect_calibration_board(frame).pose().to_matrix()
         distance_to_checkerboard = checkerboard_pose[2, 3]
-
-        rgb = frame.point_cloud().copy_data("rgba")[:, :, :3]
+        rgb = frame.point_cloud().copy_data("rgba_sgrb")[:, :, :3]
         white_squares_mask = find_white_mask_from_checkerboard(rgb)
+
     except RuntimeError as exc:
         raise RuntimeError("Unable to find checkerboard, make sure it is in view of the camera.") from exc
 
@@ -211,7 +190,7 @@ def _find_lowest_acceptable_fnum(camera: zivid.Camera, image_distance_near: floa
             )
     elif camera.info.model in (zivid.CameraInfo.Model.zivid2PlusM60, zivid.CameraInfo.Model.zivid2PlusMR60):
         focus_distance = 600
-        focal_length = 11
+        focal_length = 6.75
         circle_of_confusion = 0.008
         fnum_min = 2.37
         if image_distance_near < 300 or image_distance_far > 1100:
@@ -221,7 +200,7 @@ def _find_lowest_acceptable_fnum(camera: zivid.Camera, image_distance_near: floa
             )
     elif camera.info.model in (zivid.CameraInfo.Model.zivid2PlusL110, zivid.CameraInfo.Model.zivid2PlusLR110):
         focus_distance = 1100
-        focal_length = 11
+        focal_length = 6.75
         circle_of_confusion = 0.008
         fnum_min = 2.37
         if image_distance_near < 800 or image_distance_far > 2000:
@@ -474,6 +453,12 @@ def _find_2d_settings_from_mask(
     min_exposure_time = _find_lowest_exposure_time(camera)
     brightness = _find_max_brightness(camera) if use_projector else 0
     settings_2d = _initialize_settings_2d(aperture=8, exposure_time=min_exposure_time, brightness=brightness, gain=1)
+    if not use_projector and camera.info.model in (
+        zivid.CameraInfo.Model.zivid2PlusMR130,
+        zivid.CameraInfo.Model.zivid2PlusMR60,
+        zivid.CameraInfo.Model.zivid2PlusLR110,
+    ):
+        settings_2d.sampling.color = zivid.Settings2D.Sampling.Color.grayscale
 
     lower_white_range = 210
     upper_white_range = 215

@@ -162,6 +162,7 @@ class RotationFormatSelectionWidget(QWidget):
             self.show_euler_format_selector(False)
         self.degrees_radio_button.setChecked(rotation_information.use_degrees)
         self.radians_radio_button.setChecked(not rotation_information.use_degrees)
+        self.on_transform_format_changed()
 
 
 @dataclass
@@ -267,7 +268,8 @@ def select_rotation_format(
 
 
 if __name__ == "__main__":  # NOLINT
-    qtApp = ZividQtApplication()
-    print(
-        f"Selected format: {select_rotation_format(current_rotation_format=ListOfRobotFormats[0].rotation_information)}"
-    )
+    with ZividQtApplication(use_zivid_app=False):
+        selected_rotation_format = select_rotation_format(
+            current_rotation_format=ListOfRobotFormats[0].rotation_information
+        )
+        print(f"Selected format: {selected_rotation_format}")

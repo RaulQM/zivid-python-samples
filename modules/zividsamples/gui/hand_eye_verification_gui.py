@@ -7,7 +7,7 @@ Note: This script requires the Zivid Python API and PyQt5 to be installed.
 """
 
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Dict, List
 
 import numpy as np
 import zivid
@@ -22,30 +22,12 @@ from zividsamples.gui.marker_widget import MarkerConfiguration, generate_marker_
 from zividsamples.gui.pose_widget import MarkerPosesWidget, PoseWidget, PoseWidgetDisplayMode
 from zividsamples.gui.robot_control import RobotTarget
 from zividsamples.gui.rotation_format_configuration import RotationInformation
-from zividsamples.gui.settings_selector import Settings
+from zividsamples.gui.settings_selector import SettingsPixelMappingIntrinsics
 from zividsamples.transformation_matrix import TransformationMatrix
 
 
-def capture_rgba(
-    capture_function: Callable[[zivid.Settings2D], zivid.Frame2D], settings_2d: zivid.Settings2D
-) -> NDArray[Shape["H, W, 4"], UInt8]:  # type: ignore
-    frame_2d = capture_function(settings_2d)
-    return frame_2d.image_srgb().copy_data()
-
-
-def create_board_in_camera_frame(
-    transformation_matrix: TransformationMatrix,
-) -> NDArray[Shape["6, 7, 3"], Float32]:  # type: ignore
-    corner_size = 30.0
-    board_points = np.zeros((6, 7, 3), dtype=np.float32)
-    for row in range(6):
-        for col in range(7):
-            board_points[row, col, :] = [col * corner_size, row * corner_size, 0]
-    return transformation_matrix.transform(board_points)
-
-
 def extract_marker_points_in_camera_frame(
-    markers: Dict[str, MarkerShape]
+    markers: Dict[str, MarkerShape],
 ) -> NDArray[Shape["N, 3"], Float32]:  # type: ignore
     marker_points = np.zeros((len(markers) * 4, 3), dtype=np.float32)
     for index, marker in enumerate(markers.values()):
@@ -58,11 +40,11 @@ class HandEyeVerificationGUI(QWidget):
     use_robot: bool
     detected_markers: Dict[str, MarkerShape] = {}
     detected_marker_poses_in_robot_frame: Dict[str, TransformationMatrix] = {}
-    detected_marker_points_in_robot_frame: NDArray[Shape["N, 3"], Float32] = np.zeros(  # type: ignore
+    detected_feature_points_in_robot_frame: NDArray[Shape["N, 3"], Float32] = np.zeros(  # type: ignore
         (0, 3), dtype=np.float32
     )
     detected_marker_poses_in_camera_frame: Dict[str, TransformationMatrix] = {}
-    detected_marker_points_in_camera_frame: NDArray[Shape["N, 3"], Float32] = np.zeros(  # type: ignore
+    detected_feature_points_in_camera_frame: NDArray[Shape["N, 3"], Float32] = np.zeros(  # type: ignore
         (0, 3), dtype=np.float32
     )
     hand_eye_configuration: HandEyeConfiguration
@@ -70,7 +52,7 @@ class HandEyeVerificationGUI(QWidget):
     advanced_view: bool = False
     has_set_object_poses_in_robot_frame: bool = False
     has_confirmed_robot_pose: bool = False
-    update_projection = pyqtSignal()
+    update_projection = pyqtSignal(bool)
     instructions_updated: pyqtSignal = pyqtSignal()
     description: List[str]
     instruction_steps: Dict[str, bool]
@@ -180,7 +162,9 @@ class HandEyeVerificationGUI(QWidget):
 
     def update_instructions(self, has_set_object_poses_in_robot_frame: bool, robot_pose_confirmed: bool):
         self.has_confirmed_robot_pose = robot_pose_confirmed
-        self.has_set_object_poses_in_robot_frame = has_set_object_poses_in_robot_frame and self.has_confirmed_robot_pose
+        self.has_set_object_poses_in_robot_frame = has_set_object_poses_in_robot_frame and (
+            self.has_confirmed_robot_pose or self.use_robot
+        )
         self.instruction_steps = {}
         if self.use_robot:
             self.instruction_steps[
@@ -294,28 +278,38 @@ class HandEyeVerificationGUI(QWidget):
         self.update_instructions(
             has_set_object_poses_in_robot_frame=self.has_set_object_poses_in_robot_frame, robot_pose_confirmed=True
         )
+        if self.has_set_object_poses_in_robot_frame:
+            self.calculate_calibration_object_in_camera_frame_pose()
+            self.update_projection.emit(True)
 
     def on_confirm_robot_pose_button_clicked(self):
         self.confirm_robot_pose()
 
     def on_robot_pose_manually_updated(self):
-        self.calculate_calibration_object_in_camera_frame_pose()
-        self.update_instructions(False, False)
-        self.update_projection.emit()
+        self.update_instructions(
+            has_set_object_poses_in_robot_frame=self.has_set_object_poses_in_robot_frame,
+            robot_pose_confirmed=self.has_confirmed_robot_pose,
+        )
+        if self.has_set_object_poses_in_robot_frame:
+            self.calculate_calibration_object_in_camera_frame_pose()
+            self.update_projection.emit(True)
 
     def on_actual_pose_updated(self, robot_target: RobotTarget):
         self.robot_pose_widget.set_transformation_matrix(robot_target.pose)
         self.confirm_robot_pose()
         self.calculate_calibration_object_in_camera_frame_pose()
-        self.update_projection.emit()
+        self.update_projection.emit(True)
 
     def on_target_pose_updated(self, robot_target: RobotTarget):
         self.robot_pose_widget.set_transformation_matrix(robot_target.pose)
         self.has_confirmed_robot_pose = False
         self.calculate_calibration_object_in_camera_frame_pose()
-        self.update_projection.emit()
+        self.update_projection.emit(True)
 
-    def process_capture(self, frame: zivid.Frame, rgba: NDArray[Shape["N, M, 4"], UInt8], settings: Settings):  # type: ignore
+    def has_features_to_project(self) -> bool:
+        return (self.has_confirmed_robot_pose or self.use_robot) and self.has_set_object_poses_in_robot_frame
+
+    def process_capture(self, frame: zivid.Frame, rgba: NDArray[Shape["N, M, 4"], UInt8], settings: SettingsPixelMappingIntrinsics):  # type: ignore
         self.detected_markers = {}
         detection_result = (
             zivid.calibration.detect_calibration_board(frame)
@@ -327,26 +321,23 @@ class HandEyeVerificationGUI(QWidget):
             )
         )
         if not detection_result.valid():
-            calibration_object_text = (
-                "checkerboard"
-                if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard
-                else "markers"
-            )
-            raise RuntimeError(f"Failed to detect {calibration_object_text}")
+            if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
+                raise RuntimeError(f"Failed to detect Checkerboard. {detection_result.status_description()}")
+            raise RuntimeError("Failed to detect Markers.")
 
         if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
+            self.detected_feature_points_in_camera_frame = np.asarray(detection_result.feature_points())
             self.calibration_board_in_camera_frame_pose_widget.set_transformation_matrix(
                 TransformationMatrix.from_matrix(np.asarray(detection_result.pose().to_matrix()))
             )
         else:
             self.detected_markers = generate_marker_dictionary(detection_result.detected_markers())
-            self.detected_marker_points_in_camera_frame = extract_marker_points_in_camera_frame(self.detected_markers)
+            self.detected_feature_points_in_camera_frame = extract_marker_points_in_camera_frame(self.detected_markers)
             self.detected_marker_poses_in_camera_frame = {
                 key: TransformationMatrix.from_matrix(np.asarray(value.pose.to_matrix()))
                 for key, value in self.detected_markers.items()
             }
-        self.markers_in_camera_frame_pose_widget.set_markers(self.detected_marker_poses_in_camera_frame)
-        self.calculate_calibration_object_in_robot_frame_pose()
+            self.markers_in_camera_frame_pose_widget.set_markers(self.detected_marker_poses_in_camera_frame)
         rgb = rgba[:, :, :3].copy().astype(np.uint8)
         if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
             pose = detection_result.pose()
@@ -356,15 +347,13 @@ class HandEyeVerificationGUI(QWidget):
             detected_markers = detection_result.detected_markers()
             rgba[:, :, :3] = self.cv2_handler.draw_detected_markers(detected_markers, rgb, settings.pixel_mapping)
         self.detection_visualization_widget.set_rgba_image(rgba)
+        if self.has_confirmed_robot_pose:
+            self.calculate_calibration_object_in_robot_frame_pose()
+            self.update_projection.emit(True)
 
     def generate_projector_image(self, camera: zivid.Camera):
-        points_in_camera_frame = (
-            create_board_in_camera_frame(self.calibration_board_in_camera_frame_pose_widget.transformation_matrix)
-            if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard
-            else self.detected_marker_points_in_camera_frame
-        )
         projector_pixels = np.asarray(
-            zivid.projection.pixels_from_3d_points(camera, points_in_camera_frame.reshape([-1, 3]))
+            zivid.projection.pixels_from_3d_points(camera, self.detected_feature_points_in_camera_frame)
         )
         projector_resolution = zivid.projection.projector_resolution(camera)
         background_color = (0, 0, 0, 255)
@@ -380,9 +369,20 @@ class HandEyeVerificationGUI(QWidget):
         color = (0, 255, 0, 255) if self.has_confirmed_robot_pose else (0, 255, 255, 255)
         if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
             self.cv2_handler.draw_circles(projector_image, non_nan_projector_image_indices, color)
+            # Add diagonal lines across white checkers
+            rows, cols = (5, 6) if projector_pixels.shape[0] == 30 else (3, 4)
+            organized_projector_pixel_indices = non_nan_projector_image_indices.reshape(rows, cols, -1)
+            diagonal_lines = np.array(
+                [
+                    [organized_projector_pixel_indices[0, 1], organized_projector_pixel_indices[-1, -1]],
+                    [organized_projector_pixel_indices[-1, 1], organized_projector_pixel_indices[0, -1]],
+                ]
+            )
+            self.cv2_handler.draw_polygons(projector_image, diagonal_lines, color=color)
         else:
-            self.cv2_handler.draw_polygons(projector_image, non_nan_projector_image_indices, color)
-        projector_image[0, 0] = [1, 1, 1, 255]  # TODO(ZIVID-8760): Remove workaround
+            self.cv2_handler.draw_polygons(
+                projector_image, non_nan_projector_image_indices.reshape((-1, 4, 2)), color=color
+            )
         return projector_image
 
     def calculate_calibration_object_in_camera_frame_pose(self):
@@ -393,49 +393,47 @@ class HandEyeVerificationGUI(QWidget):
             if self.hand_eye_configuration.eye_in_hand
             else hand_eye_transform.inv() * robot_transform
         )
+        self.detected_feature_points_in_camera_frame = camera_frame_transform.transform(
+            self.detected_feature_points_in_robot_frame
+        ).squeeze()
         if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
             cb_robot_frame = self.calibration_board_in_robot_base_frame_pose_widget.transformation_matrix
             cb_camera = camera_frame_transform * cb_robot_frame
             self.calibration_board_in_camera_frame_pose_widget.set_transformation_matrix(cb_camera)
         elif len(self.detected_markers) > 0:
-            self.detected_marker_points_in_camera_frame = camera_frame_transform.transform(
-                self.detected_marker_points_in_robot_frame
-            )
             self.detected_marker_poses_in_camera_frame = {
                 key: camera_frame_transform * value for key, value in self.detected_marker_poses_in_robot_frame.items()
             }
             self.markers_in_camera_frame_pose_widget.set_markers(self.detected_marker_poses_in_camera_frame)
 
     def calculate_calibration_object_in_robot_frame_pose(self):
-        if self.has_confirmed_robot_pose:
-            self.update_instructions(
-                has_set_object_poses_in_robot_frame=True, robot_pose_confirmed=self.has_confirmed_robot_pose
-            )
-            hand_eye_transform = self.hand_eye_pose_widget.transformation_matrix
-            robot_transform = self.robot_pose_widget.transformation_matrix
-            robot_frame_transform = (
-                robot_transform * hand_eye_transform
-                if self.hand_eye_configuration.eye_in_hand
-                else robot_transform.inv() * hand_eye_transform
-            )
-            if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
-                cb_camera = self.calibration_board_in_camera_frame_pose_widget.transformation_matrix
-                cb_robot_frame = robot_frame_transform * cb_camera
-                self.calibration_board_in_robot_base_frame_pose_widget.set_transformation_matrix(cb_robot_frame)
-            else:
-                self.detected_marker_points_in_robot_frame = robot_frame_transform.transform(
-                    self.detected_marker_points_in_camera_frame
-                )
-                self.detected_marker_poses_in_robot_frame = {
-                    key: robot_frame_transform * value
-                    for key, value in self.detected_marker_poses_in_camera_frame.items()
-                }
-                self.markers_in_robot_base_frame_pose_widget.set_markers(self.detected_marker_poses_in_robot_frame)
+        hand_eye_transform = self.hand_eye_pose_widget.transformation_matrix
+        robot_transform = self.robot_pose_widget.transformation_matrix
+        robot_frame_transform = (
+            robot_transform * hand_eye_transform
+            if self.hand_eye_configuration.eye_in_hand
+            else robot_transform.inv() * hand_eye_transform
+        )
+        self.detected_feature_points_in_robot_frame = robot_frame_transform.transform(
+            self.detected_feature_points_in_camera_frame
+        ).squeeze()
+        self.update_instructions(
+            has_set_object_poses_in_robot_frame=True, robot_pose_confirmed=self.has_confirmed_robot_pose
+        )
+        if self.hand_eye_configuration.calibration_object == CalibrationObject.Checkerboard:
+            cb_camera = self.calibration_board_in_camera_frame_pose_widget.transformation_matrix
+            cb_robot_frame = robot_frame_transform * cb_camera
+            self.calibration_board_in_robot_base_frame_pose_widget.set_transformation_matrix(cb_robot_frame)
+        else:
+            self.detected_marker_poses_in_robot_frame = {
+                key: robot_frame_transform * value for key, value in self.detected_marker_poses_in_camera_frame.items()
+            }
+            self.markers_in_robot_base_frame_pose_widget.set_markers(self.detected_marker_poses_in_robot_frame)
 
     def set_hand_eye_transformation_matrix(self, transformation_matrix: TransformationMatrix):
         self.hand_eye_pose_widget.set_transformation_matrix(transformation_matrix)
         self.calculate_calibration_object_in_camera_frame_pose()
-        self.update_projection.emit()
+        self.update_projection.emit(True)
 
     def set_save_directory(self, data_directory: Path):
         if self.data_directory != data_directory:

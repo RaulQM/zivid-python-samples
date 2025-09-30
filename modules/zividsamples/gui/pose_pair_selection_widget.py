@@ -240,7 +240,7 @@ Note! This will not remove files from disk, but potentially reload them, and ana
                     if camera_image_path.exists() and detection_result.valid():
                         qimage_rgba = QImage(str(camera_image_path))
                     else:
-                        rgba = camera_frame.point_cloud().copy_data("rgba")
+                        rgba = camera_frame.point_cloud().copy_data("rgba_srgb")
                         rgb = rgba[:, :, :3].copy().astype(np.uint8)
                         if calibration_object == CalibrationObject.Markers and detection_result.valid():
                             rgba[:, :, :3] = self.cv2_handler.draw_detected_markers(
@@ -347,7 +347,9 @@ Note! This will not remove files from disk, but potentially reload them, and ana
             if pose_pair_widget.selected_checkbox.isChecked()
         ]
         for pose_pair_widget, residual in zip(checked_pose_pairs, residuals):  # noqa: B905
-            pose_pair_widget.clickable_labels.labels[2].setText(f"{residual.translation():.2f}")
+            pose_pair_widget.clickable_labels.labels[2].setText(
+                f"{residual.translation():.2f} ({residual.rotation():.2f}°)"
+            )
         unchecked_pose_pairs = [
             pose_pair_widget
             for pose_pair_widget in self.pose_pair_widgets.values()
