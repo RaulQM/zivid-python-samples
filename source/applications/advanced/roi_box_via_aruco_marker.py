@@ -9,8 +9,10 @@ from typing import List
 
 import numpy as np
 import zivid
-from zividsamples.display import display_depthmap, display_pointcloud
-from zividsamples.paths import get_sample_data_path
+import sys
+sys.path.append("/home/raul/data_processing/Zivid/zivid-python-samples/modules/zividsamples")
+from display import display_depthmap, display_pointcloud
+from paths import get_sample_data_path
 
 
 def _transform_points(points: List[np.ndarray], transform: np.ndarray) -> List[np.ndarray]:
@@ -37,14 +39,15 @@ def _transform_points(points: List[np.ndarray], transform: np.ndarray) -> List[n
 def _main() -> None:
     with zivid.Application() as app:
 
-        file_camera = get_sample_data_path() / "BinWithCalibrationBoard.zfc"
+        file_camera = "/home/raul/data_processing/Zivid/zivid-python-samples/source/applications/advanced/CalibrationBoardInCameraOrigin0.zdf"
 
-        print(f"Creating virtual camera using file: {file_camera}")
-        camera = app.create_file_camera(file_camera)
+        # print(f"Creating virtual camera using file: {file_camera}")
+        # camera = app.create_file_camera(file_camera)
 
         settings = zivid.Settings([zivid.Settings.Acquisition()])
 
-        original_frame = camera.capture(settings)
+        # original_frame = camera.capture(settings)
+        original_frame = zivid.Frame(file_camera)
         point_cloud = original_frame.point_cloud()
 
         print("Displaying the original point cloud")

@@ -10,10 +10,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 import zivid
-from zividsamples.display import display_bgr
-from zividsamples.paths import get_sample_data_path
-from zividsamples.save_load_matrix import assert_affine_matrix_and_save
+import sys
+sys.path.append("/home/raul/data_processing/Zivid/zivid-python-samples/modules/zividsamples")
+from display import display_bgr
+from paths import get_sample_data_path
+from save_load_matrix import assert_affine_matrix_and_save
+import matplotlib.pyplot as plt
 
+import matplotlib
+
+matplotlib.use('TkAgg')
 
 def _draw_detected_marker(bgra_image: np.ndarray, detection_result: zivid.calibration.DetectionResult) -> np.ndarray:
     """Draw detected ArUco marker on the BGRA image based on Zivid ArUco marker detection results.
@@ -39,11 +45,19 @@ def _draw_detected_marker(bgra_image: np.ndarray, detection_result: zivid.calibr
 
 def _main() -> None:
     with zivid.Application():
+    
+        file_nb = 3
 
-        data_file = get_sample_data_path() / "CalibrationBoardInCameraOrigin.zdf"
+        data_file = f"/home/raul/data_processing/Zivid/zivid-python-samples/source/applications/advanced/CalibrationBoardInCameraOrigin{file_nb}.zdf"
         print(f"Reading ZDF frame from file: {data_file}")
         frame = zivid.Frame(data_file)
         point_cloud = frame.point_cloud()
+
+        rgba = frame.point_cloud().copy_data("rgba") # Get point colors as [Height,Width,4] uint8 array
+
+        # plt.figure()
+        # plt.imshow(rgba)
+        # plt.show()
 
         print("Configuring ArUco marker")
         marker_dictionary = zivid.calibration.MarkerDictionary.aruco4x4_50
@@ -62,7 +76,7 @@ def _main() -> None:
         bgr = _draw_detected_marker(bgra_image, detection_result)
         display_bgr(bgr, "ArucoMarkerDetected")
 
-        bgr_image_file = "ArucoMarkerDetected.png"
+        bgr_image_file = "ArucoMarkerDetected3.png"
         print(f"Saving 2D color image with detected ArUco marker to file: {bgr_image_file}")
         cv2.imwrite(bgr_image_file, bgr)
 
@@ -74,14 +88,26 @@ def _main() -> None:
         transform_marker_to_camera = np.linalg.inv(transform_camera_to_marker)
         print(transform_marker_to_camera)
 
-        transform_file = Path("ArUcoMarkerToCameraTransform.yaml")
+        transform_file = Path("ArUcoMarkerToCameraTransform3.yaml")
         print("Saving a YAML file with Inverted ArUco marker pose to file: ")
         assert_affine_matrix_and_save(transform_marker_to_camera, transform_file)
 
         print("Transforming point cloud from camera frame to ArUco marker frame")
         point_cloud.transform(transform_marker_to_camera)
 
-        aruco_marker_transformed_file = "CalibrationBoardInArucoMarkerOrigin.zdf"
+        # xyz = frame.point_cloud().copy_data("xyz") # Get point coordinates as [Height,Width,3] float array
+        # xyz = xyz.reshape(-1, 3)
+        # # Create a 3D scatter plot
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection='3d')
+        # ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=xyz[:, 2], cmap='viridis', s=1)  # Adjust `s` for point size
+        # # Set labels
+        # ax.set_xlabel("X")
+        # ax.set_ylabel("Y")
+        # ax.set_zlabel("Z")
+        # plt.show()
+
+        aruco_marker_transformed_file = f"CalibrationBoardInArucoMarkerOrigin{file_nb}.zdf"
         print(f"Saving transformed point cloud to file: {aruco_marker_transformed_file}")
         frame.save(aruco_marker_transformed_file)
 

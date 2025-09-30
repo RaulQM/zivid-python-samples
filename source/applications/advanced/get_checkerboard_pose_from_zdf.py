@@ -12,8 +12,10 @@ from pathlib import Path
 import numpy as np
 import open3d as o3d
 import zivid
-from zividsamples.paths import get_sample_data_path
-from zividsamples.save_load_matrix import assert_affine_matrix_and_save
+import sys
+sys.path.append("/home/raul/data_processing/Zivid/zivid-python-samples/modules/zividsamples")
+from paths import get_sample_data_path
+from save_load_matrix import assert_affine_matrix_and_save
 
 
 def _create_open3d_point_cloud(point_cloud: zivid.PointCloud) -> o3d.geometry.PointCloud:
@@ -66,7 +68,7 @@ def _visualize_checkerboard_point_cloud_with_coordinate_system(
 
 def _main() -> None:
     with zivid.Application():
-        data_file = get_sample_data_path() / "CalibrationBoardInCameraOrigin.zdf"
+        data_file = "/home/raul/data_processing/Zivid/zivid-python-samples/source/applications/advanced/CalibrationBoardInCameraOrigin.zdf"
         print(f"Reading ZDF frame from file: {data_file}")
         frame = zivid.Frame(data_file)
         point_cloud = frame.point_cloud()
@@ -85,7 +87,6 @@ def _main() -> None:
         _visualize_checkerboard_point_cloud_with_coordinate_system(
             checkerboard_point_cloud, camera_to_checkerboard_transform
         )
-
 
 if __name__ == "__main__":
     _main()

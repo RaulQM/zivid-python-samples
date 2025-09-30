@@ -14,9 +14,11 @@ import cv2
 import numpy as np
 import zivid
 import zivid.experimental.calibration
-from zividsamples.display import display_bgr
-from zividsamples.paths import get_sample_data_path
-from zividsamples.save_load_matrix import assert_affine_matrix_and_save
+import sys
+sys.path.append("/home/raul/data_processing/Zivid/zivid-python-samples/modules/zividsamples")
+from display import display_bgr
+from paths import get_sample_data_path
+from save_load_matrix import assert_affine_matrix_and_save
 
 
 def _coordinate_system_line(
@@ -159,7 +161,7 @@ def _draw_coordinate_system(frame: zivid.Frame, checkerboard_pose: np.ndarray, b
 def _main() -> None:
     with zivid.Application():
 
-        data_file = get_sample_data_path() / "CalibrationBoardInCameraOrigin.zdf"
+        data_file = "/home/raul/data_processing/Zivid/zivid-python-samples/source/applications/advanced/CalibrationBoardInCameraOrigin.zdf"
         print(f"Reading ZDF frame from file: {data_file}")
         frame = zivid.Frame(data_file)
         point_cloud = frame.point_cloud()
